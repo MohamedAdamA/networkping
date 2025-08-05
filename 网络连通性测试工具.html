@@ -1,0 +1,1470 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>实时翻墙连通性 & 延迟监测</title>
+    <!-- Tailwind CSS (CDN) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Chart.js (CDN) -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- 日期适配器：解决 Chart.js time 轴报错 -->
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
+    <style>
+        body { 
+            background-color: #f9fafb; 
+            color: #374151; 
+        }
+        .status-indicator { 
+            display: inline-block; 
+            width: 8px; 
+            height: 8px; 
+            border-radius: 50%; 
+            margin-right: 6px; 
+        }
+        .status-online { background-color: #10b981; }
+        .status-offline { background-color: #ef4444; }
+        .status-checking { background-color: #f59e0b; animation: pulse 2s infinite; }
+        
+        /* 目标选择器样式 */
+        .target-selector {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+        .target-checkbox {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .target-checkbox:hover {
+            background-color: #f3f4f6;
+        }
+        .target-checkbox.selected {
+            background-color: #dbeafe;
+            border-color: #3b82f6;
+        }
+        
+        /* 离线统计样式 */
+        .offline-stats {
+            font-size: 12px;
+            color: #6b7280;
+            margin-top: 4px;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col items-center p-6">
+    <!-- 顶部标题 + 控制面板 -->
+    <header class="mb-6 w-full max-w-7xl text-center">
+        <h1 class="text-3xl font-bold mb-2">🌐 实时网页连通性 & 延迟监测</h1>
+        <p class="text-gray-600 mb-4">实时监测网络延迟，支持历史数据查看和PNG导出</p>
+        
+        <!-- 控制面板 -->
+        <div class="bg-white rounded-xl shadow p-4 mb-4">
+            <div class="flex flex-wrap items-center justify-center gap-4 mb-4">
+                <!-- 刷新间隔 -->
+                <div class="flex items-center gap-2">
+                    <label for="intervalSelect" class="font-medium">刷新间隔:</label>
+                    <select id="intervalSelect" class="border rounded px-3 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <option value="1000" selected>1 秒</option>
+                        <option value="5000">5 秒</option>
+                        <option value="10000">10 秒</option>
+                        <option value="30000">30 秒</option>
+                    </select>
+                </div>
+                
+                <!-- 时间范围 -->
+                <div class="flex items-center gap-2">
+                    <label for="timeRangeSelect" class="font-medium">时间范围:</label>
+                    <select id="timeRangeSelect" class="border rounded px-3 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <option value="0.5">30 秒</option>
+                        <option value="1">1 分钟</option>
+                        <option value="5" selected>5 分钟</option>
+                        <option value="60">1 小时</option>
+                        <option value="180">3 小时</option>
+                        <option value="360">6 小时</option>
+                        <option value="720">12 小时</option>
+                        <option value="1440">24 小时</option>
+                    </select>
+                </div>
+                
+                <!-- 导出按钮 -->
+                <button id="exportBtn" class="bg-blue-600 text-white px-4 py-1 rounded hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors">
+                    📊 导出PNG
+                </button>
+                
+                <!-- 清除数据按钮 -->
+                <button id="clearBtn" class="bg-gray-600 text-white px-4 py-1 rounded hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-gray-500 transition-colors">
+                    🗑️ 清除数据
+                </button>
+                
+                <!-- 添加自定义网址按钮 -->
+                <button id="addCustomBtn" class="bg-green-600 text-white px-4 py-1 rounded hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 transition-colors">
+                    ➕ 自定义网址
+                </button>
+            </div>
+            
+            <!-- 目标选择器 -->
+            <div class="border-t pt-4">
+                <label class="block text-sm font-medium text-gray-700 mb-2">选择要显示的目标:</label>
+                <div class="target-selector" id="targetSelector">
+                    <!-- 动态生成目标选择器 -->
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- 主体内容区 -->
+    <div class="w-full max-w-7xl space-y-6">
+        <!-- 当前状态表格 -->
+        <div class="bg-white rounded-2xl shadow p-6">
+            <h2 class="text-xl font-semibold mb-4">📋 当前状态</h2>
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200" id="status-table">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">目标</th>
+                            <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">状态</th>
+                            <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">当前延迟</th>
+                            <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">延迟统计</th>
+                            <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">在线统计</th>
+                            <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">离线统计</th>
+                            <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">上次检测</th>
+                        </tr>
+                    </thead>
+                    <tbody class="bg-white divide-y divide-gray-200" id="status-tbody">
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 详细统计面板 -->
+        <div class="bg-white rounded-2xl shadow p-6">
+            <h2 class="text-xl font-semibold mb-4">📊 详细统计数据</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="detailedStats">
+                <!-- 动态生成统计卡片 -->
+            </div>
+        </div>
+
+        <!-- 工具原理说明 -->
+        <div class="bg-white rounded-2xl shadow p-6">
+            <h2 class="text-xl font-semibold mb-4">🔬 工具原理说明</h2>
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <!-- 延迟测试原理 -->
+                <div class="bg-blue-50 rounded-lg p-4">
+                    <h3 class="font-semibold text-blue-900 mb-3 flex items-center">
+                        <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                        </svg>
+                        延迟测试原理
+                    </h3>
+                    <div class="text-sm text-blue-800 space-y-2">
+                        <p><strong>测试方法：</strong>HTTP请求响应时间测量</p>
+                        <p><strong>测试过程：</strong></p>
+                        <ol class="list-decimal list-inside ml-4 space-y-1">
+                            <li>使用JavaScript的Fetch API发送HTTP请求</li>
+                            <li>记录请求开始时间（performance.now()）</li>
+                            <li>等待服务器响应</li>
+                            <li>记录响应结束时间</li>
+                            <li>计算往返时间差值</li>
+                        </ol>
+                        <p><strong>测试内容：</strong>包含DNS解析、TCP连接、HTTP协议处理等完整网络访问时间</p>
+                        <p><strong>与ping的区别：</strong>ping测试的是ICMP协议的纯网络延迟，本工具测试的是实际网页访问延迟</p>
+                    </div>
+                </div>
+
+                <!-- 数据统计说明 -->
+                <div class="bg-green-50 rounded-lg p-4">
+                    <h3 class="font-semibold text-green-900 mb-3 flex items-center">
+                        <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+                        </svg>
+                        数据统计说明
+                    </h3>
+                    <div class="text-sm text-green-800 space-y-2">
+                        <p><strong>延迟统计：</strong></p>
+                        <ul class="list-disc list-inside ml-4 space-y-1">
+                            <li>最小延迟：监测期间记录的最快响应时间</li>
+                            <li>最大延迟：监测期间记录的最慢响应时间</li>
+                            <li>平均延迟：所有成功请求的平均响应时间</li>
+                        </ul>
+                        <p><strong>连接统计：</strong></p>
+                        <ul class="list-disc list-inside ml-4 space-y-1">
+                            <li>总检测次数：发起的总请求数量</li>
+                            <li>成功次数：成功响应的请求数量</li>
+                            <li>成功率：成功请求占总请求的百分比</li>
+                        </ul>
+                        <p><strong>在线/离线统计：</strong>基于连续的成功/失败状态计算时长和次数</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 实时折线图 -->
+        <div class="bg-white rounded-2xl shadow p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-xl font-semibold">📈 实时延迟趋势图</h2>
+                <div class="text-sm text-gray-500" id="chartStatus">
+                    显示最近 <span id="currentTimeRange">5</span> 分钟数据
+                </div>
+            </div>
+            <div class="relative">
+                <canvas id="latencyChart" height="350"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- 自定义网址模态框 -->
+    <div id="customUrlModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 hidden items-center justify-center z-50 p-4">
+        <div class="bg-white rounded-lg shadow-xl max-w-2xl w-full transform transition-all duration-300 scale-95 opacity-0" id="customModalContent">
+            <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+                <h3 class="text-lg font-semibold text-gray-900">添加自定义监测网址</h3>
+                <button id="closeCustomModal" class="text-gray-400 hover:text-gray-600 focus:outline-none">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+            
+            <!-- 使用帮助 -->
+            <div class="px-6 py-4 bg-blue-50 border-b">
+                <h4 class="font-semibold text-blue-900 mb-2">📖 使用帮助</h4>
+                <div class="text-sm text-blue-800 space-y-2">
+                    <p><strong>支持的网址格式：</strong></p>
+                    <ul class="list-disc list-inside ml-4 space-y-1">
+                        <li><code>https://example.com</code> - 完整HTTPS网址</li>
+                        <li><code>http://example.com</code> - HTTP网址（不推荐）</li>
+                        <li><code>https://example.com/path</code> - 带路径的网址</li>
+                        <li><code>https://subdomain.example.com</code> - 子域名</li>
+                    </ul>
+                    <p><strong>推荐的测试端点：</strong></p>
+                    <ul class="list-disc list-inside ml-4 space-y-1">
+                        <li><code>https://example.com/favicon.ico</code> - 网站图标（通常较小）</li>
+                        <li><code>https://example.com/robots.txt</code> - 机器人文件（文本文件）</li>
+                        <li><code>https://api.example.com/ping</code> - API ping端点</li>
+                        <li><code>https://cdn.example.com/logo.png</code> - CDN资源</li>
+                    </ul>
+                    <p><strong>注意事项：</strong></p>
+                    <ul class="list-disc list-inside ml-4 space-y-1">
+                        <li>建议使用HTTPS协议确保安全性</li>
+                        <li>选择响应快的轻量级资源进行测试</li>
+                        <li>避免使用需要认证的网址</li>
+                        <li>某些网站可能有CORS限制，影响测试结果</li>
+                    </ul>
+                </div>
+            </div>
+            
+            <div class="p-6">
+                <form id="customUrlForm" class="space-y-4">
+                    <div>
+                        <label for="customName" class="block text-sm font-medium text-gray-700 mb-2">
+                            网站名称 <span class="text-red-500">*</span>
+                        </label>
+                        <input type="text" id="customName" 
+                               class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" 
+                               placeholder="例如：我的网站" required>
+                        <p class="text-xs text-gray-500 mt-1">为这个监测目标设置一个易识别的名称</p>
+                    </div>
+                    
+                    <div>
+                        <label for="customUrl" class="block text-sm font-medium text-gray-700 mb-2">
+                            测试网址 <span class="text-red-500">*</span>
+                        </label>
+                        <input type="url" id="customUrl" 
+                               class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" 
+                               placeholder="https://example.com/favicon.ico" required>
+                        <p class="text-xs text-gray-500 mt-1">输入要监测的完整网址，建议使用轻量级资源</p>
+                    </div>
+                    
+                    <div>
+                        <label for="customColor" class="block text-sm font-medium text-gray-700 mb-2">
+                            图表颜色
+                        </label>
+                        <div class="flex items-center space-x-2">
+                            <input type="color" id="customColor" value="#8b5cf6" 
+                                   class="w-12 h-10 border border-gray-300 rounded cursor-pointer">
+                            <span class="text-sm text-gray-600">选择在图表中显示的颜色</span>
+                        </div>
+                    </div>
+                    
+                    <!-- 实例展示 -->
+                    <div class="bg-gray-50 p-4 rounded-lg">
+                        <h5 class="font-medium text-gray-900 mb-2">💡 配置实例</h5>
+                        <div class="space-y-2 text-sm">
+                            <div class="flex justify-between">
+                                <span class="text-gray-600">网站名称:</span>
+                                <span class="font-mono">GitHub</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-gray-600">测试网址:</span>
+                                <span class="font-mono">https://github.com/favicon.ico</span>
+                            </div>
+                            <div class="flex justify-between items-center">
+                                <span class="text-gray-600">图表颜色:</span>
+                                <div class="w-4 h-4 bg-purple-500 rounded"></div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 表单验证提示 -->
+                    <div id="customFormError" class="hidden p-3 bg-red-50 border border-red-200 rounded-md">
+                        <div class="flex">
+                            <svg class="w-5 h-5 text-red-400 mr-2 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"></path>
+                            </svg>
+                            <div class="text-sm text-red-700" id="customFormErrorMessage"></div>
+                        </div>
+                    </div>
+                </form>
+            </div>
+            
+            <div class="px-6 py-4 border-t border-gray-200 flex justify-end space-x-3">
+                <button id="cancelCustomUrl" class="px-4 py-2 text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-500 transition-colors">
+                    取消
+                </button>
+                <button id="confirmCustomUrl" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors">
+                    添加监测
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // =============== 配置目标站点 ===============
+        const targets = [
+            { 
+                name: "Google", 
+                testUrls: [
+                    "https://clients3.google.com/generate_204",
+                    "https://www.google.com/favicon.ico"
+                ],
+                color: "rgb(59, 130, 246)",
+                enabled: true
+            },
+            { 
+                name: "YouTube", 
+                testUrls: [
+                    "https://www.youtube.com/generate_204",
+                    "https://www.youtube.com/favicon.ico"
+                ],
+                color: "rgb(239, 68, 68)",
+                enabled: true
+            },
+            { 
+                name: "Instagram", 
+                testUrls: [
+                    "https://www.instagram.com/favicon.ico"
+                ],
+                color: "rgb(236, 72, 153)",
+                enabled: true
+            },
+            { 
+                name: "X / Twitter", 
+                testUrls: [
+                    "https://abs.twimg.com/favicons/twitter.ico",
+                    "https://x.com/favicon.ico"
+                ],
+                color: "rgb(15, 23, 42)",
+                enabled: true
+            },
+            { 
+                name: "百度", 
+                testUrls: [
+                    "https://www.baidu.com/favicon.ico"
+                ],
+                color: "rgb(37, 99, 235)",
+                enabled: true
+            },
+            { 
+                name: "腾讯视频", 
+                testUrls: [
+                    "https://v.qq.com/favicon.ico"
+                ],
+                color: "rgb(34, 197, 94)",
+                enabled: true
+            }
+        ];
+
+        // =============== 全局变量 ===============
+        const intervalSelect = document.getElementById("intervalSelect");
+        const timeRangeSelect = document.getElementById("timeRangeSelect");
+        const exportBtn = document.getElementById("exportBtn");
+        const clearBtn = document.getElementById("clearBtn");
+        const addCustomBtn = document.getElementById("addCustomBtn");
+        const tbody = document.getElementById("status-tbody");
+        const targetSelector = document.getElementById("targetSelector");
+        
+        let UPDATE_INTERVAL = Number(intervalSelect.value);
+        let TIME_RANGE_MINUTES = Number(timeRangeSelect.value);
+        let HISTORY_LENGTH = Math.floor((TIME_RANGE_MINUTES * 60 * 1000) / UPDATE_INTERVAL);
+        let timerId;
+        let latencyChart;
+        
+        // 详细统计数据
+        let detailedStats = {};
+        targets.forEach(t => {
+            detailedStats[t.name] = {
+                // 延迟统计
+                latencies: [],
+                minLatency: null,
+                maxLatency: null,
+                avgLatency: null,
+                
+                // 离线统计
+                offlineCount: 0,
+                totalOfflineTime: 0,
+                lastOfflineStart: null,
+                isCurrentlyOffline: false,
+                offlineEvents: [], // 记录每次离线事件 {start, end, duration}
+                
+                // 在线统计
+                totalOnlineTime: 0,
+                lastOnlineStart: null,
+                isCurrentlyOnline: false,
+                onlineEvents: [], // 记录每次在线事件 {start, end, duration}
+                
+                // 会话统计
+                sessionStart: Date.now(),
+                totalChecks: 0,
+                successfulChecks: 0
+            };
+        });
+
+        // =============== DOM 初始化 ===============
+        function initializeTargetSelector() {
+            targetSelector.innerHTML = '';
+            targets.forEach((target, index) => {
+                const div = document.createElement('div');
+                div.className = `target-checkbox ${target.enabled ? 'selected' : ''}`;
+                div.innerHTML = `
+                    <input type="checkbox" ${target.enabled ? 'checked' : ''} 
+                           onchange="toggleTarget(${index})" style="margin: 0;">
+                    <div class="w-3 h-3 rounded-full" style="background-color: ${target.color}"></div>
+                    <span class="text-sm font-medium">${target.name}</span>
+                `;
+                targetSelector.appendChild(div);
+            });
+        }
+
+        function initializeTable() {
+            tbody.innerHTML = '';
+            targets.forEach(t => {
+                const tr = document.createElement("tr");
+                tr.className = "hover:bg-gray-50 transition-colors";
+                tr.innerHTML = `
+                    <td class="px-4 py-4 whitespace-nowrap">
+                        <div class="flex items-center">
+                            <div class="w-3 h-3 rounded-full mr-3" style="background-color: ${t.color}"></div>
+                            <div class="text-sm font-medium text-gray-900">${t.name}</div>
+                        </div>
+                    </td>
+                    <td class="px-4 py-4 whitespace-nowrap text-center">
+                        <span id="${t.name}-status" class="inline-flex items-center text-sm">
+                            <span class="status-indicator status-checking"></span>
+                            待检测
+                        </span>
+                    </td>
+                    <td id="${t.name}-latency" class="px-4 py-4 whitespace-nowrap text-center text-sm font-mono">—</td>
+                    <td class="px-4 py-4 whitespace-nowrap text-center">
+                        <div id="${t.name}-latency-stats" class="text-xs text-gray-600">
+                            最小: —<br>
+                            最大: —<br>
+                            平均: —
+                        </div>
+                    </td>
+                    <td class="px-4 py-4 whitespace-nowrap text-center">
+                        <div id="${t.name}-online-stats" class="text-xs text-gray-600">
+                            在线时长: —<br>
+                            在线率: —
+                        </div>
+                    </td>
+                    <td class="px-4 py-4 whitespace-nowrap text-center">
+                        <div id="${t.name}-offline-stats" class="text-xs text-gray-600">
+                            离线次数: 0<br>
+                            离线时长: 0s
+                        </div>
+                    </td>
+                    <td id="${t.name}-time" class="px-4 py-4 whitespace-nowrap text-center text-sm text-gray-500">—</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function initializeDetailedStats() {
+            const container = document.getElementById('detailedStats');
+            container.innerHTML = '';
+            
+            targets.forEach(t => {
+                const card = document.createElement('div');
+                card.className = 'bg-gray-50 rounded-lg p-4';
+                card.innerHTML = `
+                    <div class="flex items-center mb-3">
+                        <div class="w-4 h-4 rounded-full mr-2" style="background-color: ${t.color}"></div>
+                        <h3 class="font-semibold text-gray-900">${t.name}</h3>
+                    </div>
+                    <div id="${t.name}-detailed-stats" class="space-y-2 text-sm text-gray-600">
+                        <div><strong>延迟统计:</strong></div>
+                        <div class="ml-2">
+                            最小延迟: <span class="font-mono">—</span><br>
+                            最大延迟: <span class="font-mono">—</span><br>
+                            平均延迟: <span class="font-mono">—</span>
+                        </div>
+                        <div><strong>连接统计:</strong></div>
+                        <div class="ml-2">
+                            总检测次数: <span class="font-mono">0</span><br>
+                            成功次数: <span class="font-mono">0</span><br>
+                            成功率: <span class="font-mono">—</span>
+                        </div>
+                        <div><strong>在线统计:</strong></div>
+                        <div class="ml-2">
+                            在线时长: <span class="font-mono">—</span><br>
+                            在线率: <span class="font-mono">—</span>
+                        </div>
+                        <div><strong>离线统计:</strong></div>
+                        <div class="ml-2">
+                            离线次数: <span class="font-mono">0</span><br>
+                            离线时长: <span class="font-mono">—</span><br>
+                            最后离线: <span class="font-mono">—</span>
+                        </div>
+                    </div>
+                `;
+                container.appendChild(card);
+            });
+        }
+
+        // =============== Chart.js 初始化 ===============
+        function initializeChart() {
+            const ctx = document.getElementById("latencyChart").getContext("2d");
+            
+            latencyChart = new Chart(ctx, {
+                type: "line",
+                data: {
+                    labels: [],
+                    datasets: targets.map(t => ({
+                        label: t.name,
+                        data: [],
+                        borderColor: t.color,
+                        backgroundColor: t.color + '20',
+                        tension: 0.3,
+                        spanGaps: false, // 不连接离线点
+                        pointRadius: 2,
+                        pointHoverRadius: 4,
+                        borderWidth: 2,
+                        fill: false,
+                        hidden: !t.enabled
+                    }))
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    plugins: {
+                        legend: { 
+                            position: "bottom",
+                            labels: {
+                                usePointStyle: true,
+                                padding: 20,
+                                filter: function(legendItem, chartData) {
+                                    const index = legendItem.datasetIndex;
+                                    return targets[index].enabled;
+                                }
+                            }
+                        },
+                        tooltip: { 
+                            mode: "nearest", 
+                            intersect: false,
+                            backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                            titleColor: '#374151',
+                            bodyColor: '#374151',
+                            borderColor: '#d1d5db',
+                            borderWidth: 1,
+                            cornerRadius: 8,
+                            padding: 12,
+                            callbacks: {
+                                label: function(context) {
+                                    const value = context.parsed.y;
+                                    return value !== null ? `${context.dataset.label}: ${value}ms` : `${context.dataset.label}: 离线`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            type: "time",
+                            time: { 
+                                unit: TIME_RANGE_MINUTES <= 5 ? "second" : "minute",
+                                displayFormats: { 
+                                    minute: "HH:mm",
+                                    second: "HH:mm:ss" 
+                                } 
+                            },
+                            ticks: { 
+                                autoSkip: true, 
+                                maxTicksLimit: 12
+                            },
+                            title: {
+                                display: true,
+                                text: '时间',
+                                font: { size: 12, weight: 'bold' }
+                            },
+                            grid: {
+                                color: 'rgba(0, 0, 0, 0.05)'
+                            }
+                        },
+                        y: {
+                            suggestedMin: 0,
+                            title: { 
+                                display: true, 
+                                text: "延迟 (ms)",
+                                font: { size: 12, weight: 'bold' }
+                            },
+                            grid: {
+                                color: 'rgba(0, 0, 0, 0.05)'
+                            }
+                        }
+                    },
+                    interaction: {
+                        mode: 'nearest',
+                        axis: 'x',
+                        intersect: false
+                    }
+                }
+            });
+        }
+
+        // =============== 目标切换功能 ===============
+        function toggleTarget(index) {
+            targets[index].enabled = !targets[index].enabled;
+            
+            // 更新选择器样式
+            const selector = targetSelector.children[index];
+            if (targets[index].enabled) {
+                selector.classList.add('selected');
+            } else {
+                selector.classList.remove('selected');
+            }
+            
+            // 更新图表显示
+            latencyChart.data.datasets[index].hidden = !targets[index].enabled;
+            latencyChart.update('none');
+        }
+
+        // =============== 自定义网址功能 ===============
+        function showCustomUrlModal() {
+            const modal = document.getElementById('customUrlModal');
+            const modalContent = document.getElementById('customModalContent');
+            
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+            
+            setTimeout(() => {
+                modalContent.classList.remove('scale-95', 'opacity-0');
+                modalContent.classList.add('scale-100', 'opacity-100');
+            }, 10);
+            
+            setTimeout(() => {
+                document.getElementById('customName').focus();
+            }, 150);
+        }
+
+        function hideCustomUrlModal() {
+            const modal = document.getElementById('customUrlModal');
+            const modalContent = document.getElementById('customModalContent');
+            
+            modalContent.classList.remove('scale-100', 'opacity-100');
+            modalContent.classList.add('scale-95', 'opacity-0');
+            
+            setTimeout(() => {
+                modal.classList.add('hidden');
+                modal.classList.remove('flex');
+                document.getElementById('customUrlForm').reset();
+                hideCustomFormError();
+            }, 150);
+        }
+
+        function showCustomFormError(message) {
+            const errorDiv = document.getElementById('customFormError');
+            const errorMessage = document.getElementById('customFormErrorMessage');
+            
+            errorMessage.textContent = message;
+            errorDiv.classList.remove('hidden');
+        }
+
+        function hideCustomFormError() {
+            const errorDiv = document.getElementById('customFormError');
+            errorDiv.classList.add('hidden');
+        }
+
+        function handleAddCustomUrl() {
+            const name = document.getElementById('customName').value.trim();
+            const url = document.getElementById('customUrl').value.trim();
+            const color = document.getElementById('customColor').value;
+            
+            // 验证表单
+            if (!name) {
+                showCustomFormError('请输入网站名称');
+                document.getElementById('customName').focus();
+                return;
+            }
+            
+            if (!url) {
+                showCustomFormError('请输入测试网址');
+                document.getElementById('customUrl').focus();
+                return;
+            }
+            
+            if (!isValidURL(url)) {
+                showCustomFormError('请输入有效的网址格式（需包含http://或https://）');
+                document.getElementById('customUrl').focus();
+                return;
+            }
+            
+            // 检查是否重复
+            if (targets.some(t => t.testUrls.includes(url))) {
+                showCustomFormError('该网址已存在，请勿重复添加');
+                return;
+            }
+            
+            // 添加新目标
+            const newTarget = {
+                name: name,
+                testUrls: [url],
+                color: color,
+                enabled: true,
+                isCustom: true
+            };
+            
+            targets.push(newTarget);
+            
+            // 初始化统计数据
+            detailedStats[name] = {
+                latencies: [],
+                minLatency: null,
+                maxLatency: null,
+                avgLatency: null,
+                offlineCount: 0,
+                totalOfflineTime: 0,
+                lastOfflineStart: null,
+                isCurrentlyOffline: false,
+                offlineEvents: [],
+                totalOnlineTime: 0,
+                lastOnlineStart: null,
+                isCurrentlyOnline: false,
+                onlineEvents: [],
+                sessionStart: Date.now(),
+                totalChecks: 0,
+                successfulChecks: 0
+            };
+            
+            // 重新初始化界面
+            initializeTargetSelector();
+            initializeTable();
+            initializeDetailedStats();
+            
+            // 更新图表
+            latencyChart.data.datasets.push({
+                label: name,
+                data: [],
+                borderColor: color,
+                backgroundColor: color + '20',
+                tension: 0.3,
+                spanGaps: false,
+                pointRadius: 2,
+                pointHoverRadius: 4,
+                borderWidth: 2,
+                fill: false,
+                hidden: false
+            });
+            
+            latencyChart.update('none');
+            
+            hideCustomUrlModal();
+            showNotification(`自定义目标"${name}"添加成功`, 'success');
+        }
+
+        function isValidURL(string) {
+            try {
+                const url = new URL(string);
+                return url.protocol === 'http:' || url.protocol === 'https:';
+            } catch (_) {
+                return false;
+            }
+        }
+
+        // =============== HTTP延迟检测逻辑 ===============
+        async function pingTarget(target) {
+            try {
+                const results = [];
+                const testCount = 2; // 减少测试次数提高速度
+                
+                for (let i = 0; i < testCount; i++) {
+                    const latency = await singleHttpTest(target, i);
+                    if (latency !== null) {
+                        results.push(latency);
+                    }
+                    
+                    if (i < testCount - 1) {
+                        await new Promise(resolve => setTimeout(resolve, 50));
+                    }
+                }
+                
+                if (results.length === 0) return null;
+                
+                // 取最小值作为最佳结果
+                return Math.min(...results);
+                
+            } catch (error) {
+                console.log(`${target.name} 检测失败:`, error.message);
+                return null;
+            }
+        }
+
+        async function singleHttpTest(target, testIndex) {
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 4000);
+                
+                const start = performance.now();
+                
+                const testUrl = target.testUrls[testIndex % target.testUrls.length];
+                const uniqueUrl = testUrl + `?t=${Date.now()}&i=${testIndex}`;
+                
+                await fetch(uniqueUrl, {
+                    method: 'HEAD',
+                    mode: 'no-cors',
+                    cache: 'no-store',
+                    signal: controller.signal,
+                    redirect: 'follow'
+                });
+                
+                clearTimeout(timeoutId);
+                const latency = Math.round(performance.now() - start);
+                
+                return Math.max(1, Math.min(latency, 10000));
+                
+            } catch (error) {
+                return null;
+            }
+        }
+
+        // =============== 详细统计功能 ===============
+        function updateDetailedStats(targetName, isOnline, latency = null) {
+            const stats = detailedStats[targetName];
+            const now = Date.now();
+            
+            // 更新检测统计
+            stats.totalChecks++;
+            if (isOnline) {
+                stats.successfulChecks++;
+                
+                // 更新延迟统计
+                if (latency !== null) {
+                    stats.latencies.push(latency);
+                    stats.minLatency = stats.minLatency === null ? latency : Math.min(stats.minLatency, latency);
+                    stats.maxLatency = stats.maxLatency === null ? latency : Math.max(stats.maxLatency, latency);
+                    stats.avgLatency = stats.latencies.reduce((sum, l) => sum + l, 0) / stats.latencies.length;
+                }
+            }
+            
+            // 处理在线/离线状态变化
+            if (isOnline && !stats.isCurrentlyOnline) {
+                // 刚刚上线
+                if (stats.isCurrentlyOffline && stats.lastOfflineStart) {
+                    // 结束离线事件
+                    const offlineDuration = now - stats.lastOfflineStart;
+                    stats.totalOfflineTime += offlineDuration;
+                    stats.offlineEvents.push({
+                        start: stats.lastOfflineStart,
+                        end: now,
+                        duration: offlineDuration
+                    });
+                    stats.isCurrentlyOffline = false;
+                    stats.lastOfflineStart = null;
+                }
+                
+                // 开始在线事件
+                stats.isCurrentlyOnline = true;
+                stats.lastOnlineStart = now;
+                
+            } else if (!isOnline && stats.isCurrentlyOnline) {
+                // 刚刚离线
+                if (stats.lastOnlineStart) {
+                    // 结束在线事件
+                    const onlineDuration = now - stats.lastOnlineStart;
+                    stats.totalOnlineTime += onlineDuration;
+                    stats.onlineEvents.push({
+                        start: stats.lastOnlineStart,
+                        end: now,
+                        duration: onlineDuration
+                    });
+                    stats.isCurrentlyOnline = false;
+                    stats.lastOnlineStart = null;
+                }
+                
+                // 开始离线事件
+                stats.isCurrentlyOffline = true;
+                stats.lastOfflineStart = now;
+                stats.offlineCount++;
+                
+            } else if (!isOnline && !stats.isCurrentlyOffline) {
+                // 首次离线
+                stats.isCurrentlyOffline = true;
+                stats.lastOfflineStart = now;
+                stats.offlineCount++;
+                
+            } else if (isOnline && !stats.isCurrentlyOnline) {
+                // 首次在线
+                stats.isCurrentlyOnline = true;
+                stats.lastOnlineStart = now;
+            }
+            
+            // 更新显示
+            updateStatsDisplay(targetName);
+        }
+
+        function updateStatsDisplay(targetName) {
+            const stats = detailedStats[targetName];
+            const now = Date.now();
+            
+            // 计算当前状态的时长
+            let currentOnlineTime = 0;
+            let currentOfflineTime = 0;
+            
+            if (stats.isCurrentlyOnline && stats.lastOnlineStart) {
+                currentOnlineTime = now - stats.lastOnlineStart;
+            }
+            if (stats.isCurrentlyOffline && stats.lastOfflineStart) {
+                currentOfflineTime = now - stats.lastOfflineStart;
+            }
+            
+            const totalOnlineTime = stats.totalOnlineTime + currentOnlineTime;
+            const totalOfflineTime = stats.totalOfflineTime + currentOfflineTime;
+            const totalSessionTime = now - stats.sessionStart;
+            
+            // 更新表格中的统计
+            const latencyStatsElement = document.getElementById(`${targetName}-latency-stats`);
+            if (latencyStatsElement) {
+                latencyStatsElement.innerHTML = `
+                    最小: ${stats.minLatency !== null ? stats.minLatency + 'ms' : '—'}<br>
+                    最大: ${stats.maxLatency !== null ? stats.maxLatency + 'ms' : '—'}<br>
+                    平均: ${stats.avgLatency !== null ? Math.round(stats.avgLatency) + 'ms' : '—'}
+                `;
+            }
+            
+            const onlineStatsElement = document.getElementById(`${targetName}-online-stats`);
+            if (onlineStatsElement) {
+                const onlineRate = totalSessionTime > 0 ? (totalOnlineTime / totalSessionTime * 100).toFixed(1) : '0';
+                onlineStatsElement.innerHTML = `
+                    在线时长: ${formatDuration(Math.round(totalOnlineTime / 1000))}<br>
+                    在线率: ${onlineRate}%
+                `;
+            }
+            
+            const offlineStatsElement = document.getElementById(`${targetName}-offline-stats`);
+            if (offlineStatsElement) {
+                offlineStatsElement.innerHTML = `
+                    离线次数: ${stats.offlineCount}<br>
+                    离线时长: ${formatDuration(Math.round(totalOfflineTime / 1000))}
+                `;
+            }
+            
+            // 更新详细统计卡片
+            const detailedStatsElement = document.getElementById(`${targetName}-detailed-stats`);
+            if (detailedStatsElement) {
+                const successRate = stats.totalChecks > 0 ? (stats.successfulChecks / stats.totalChecks * 100).toFixed(1) : '0';
+                const lastOfflineTime = stats.offlineEvents.length > 0 ? 
+                    new Date(stats.offlineEvents[stats.offlineEvents.length - 1].start).toLocaleString('zh-CN') : '—';
+                
+                detailedStatsElement.innerHTML = `
+                    <div><strong>延迟统计:</strong></div>
+                    <div class="ml-2">
+                        最小延迟: <span class="font-mono">${stats.minLatency !== null ? stats.minLatency + 'ms' : '—'}</span><br>
+                        最大延迟: <span class="font-mono">${stats.maxLatency !== null ? stats.maxLatency + 'ms' : '—'}</span><br>
+                        平均延迟: <span class="font-mono">${stats.avgLatency !== null ? Math.round(stats.avgLatency) + 'ms' : '—'}</span>
+                    </div>
+                    <div><strong>连接统计:</strong></div>
+                    <div class="ml-2">
+                        总检测次数: <span class="font-mono">${stats.totalChecks}</span><br>
+                        成功次数: <span class="font-mono">${stats.successfulChecks}</span><br>
+                        成功率: <span class="font-mono">${successRate}%</span>
+                    </div>
+                    <div><strong>在线统计:</strong></div>
+                    <div class="ml-2">
+                        在线时长: <span class="font-mono">${formatDuration(Math.round(totalOnlineTime / 1000))}</span><br>
+                        在线率: <span class="font-mono">${(totalOnlineTime / totalSessionTime * 100).toFixed(1)}%</span>
+                    </div>
+                    <div><strong>离线统计:</strong></div>
+                    <div class="ml-2">
+                        离线次数: <span class="font-mono">${stats.offlineCount}</span><br>
+                        离线时长: <span class="font-mono">${formatDuration(Math.round(totalOfflineTime / 1000))}</span><br>
+                        最后离线: <span class="font-mono">${lastOfflineTime}</span>
+                    </div>
+                `;
+            }
+        }
+
+        function formatDuration(seconds) {
+            if (seconds < 60) return `${seconds}s`;
+            if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            return `${hours}h ${minutes}m`;
+        }
+
+        function updateTable(name, ok, latency) {
+            const statusElement = document.getElementById(`${name}-status`);
+            const latencyElement = document.getElementById(`${name}-latency`);
+            const timeElement = document.getElementById(`${name}-time`);
+            
+            // 更新详细统计
+            updateDetailedStats(name, ok, latency);
+            
+            // 更新状态
+            if (ok) {
+                statusElement.innerHTML = `<span class="status-indicator status-online"></span>在线`;
+                statusElement.className = "inline-flex items-center text-sm text-green-600 font-medium";
+                latencyElement.textContent = latency + "ms";
+                latencyElement.className = latency < 100 ? "px-4 py-4 whitespace-nowrap text-center text-sm font-mono text-green-600 font-bold" :
+                                          latency < 300 ? "px-4 py-4 whitespace-nowrap text-center text-sm font-mono text-yellow-600 font-bold" :
+                                          "px-4 py-4 whitespace-nowrap text-center text-sm font-mono text-red-600 font-bold";
+            } else {
+                statusElement.innerHTML = `<span class="status-indicator status-offline"></span>离线`;
+                statusElement.className = "inline-flex items-center text-sm text-red-600 font-medium";
+                latencyElement.textContent = "—";
+                latencyElement.className = "px-4 py-4 whitespace-nowrap text-center text-sm font-mono text-gray-500";
+            }
+            
+            timeElement.textContent = new Date().toLocaleTimeString('zh-CN');
+        }
+
+        async function runCheck() {
+            const ts = Date.now();
+            
+            // 更新所有启用目标为检测中状态
+            targets.forEach(t => {
+                if (t.enabled) {
+                    const statusElement = document.getElementById(`${t.name}-status`);
+                    statusElement.innerHTML = `<span class="status-indicator status-checking"></span>检测中`;
+                    statusElement.className = "inline-flex items-center text-sm text-yellow-600";
+                }
+            });
+            
+            // 添加时间标签
+            latencyChart.data.labels.push(ts);
+            if (latencyChart.data.labels.length > HISTORY_LENGTH) {
+                latencyChart.data.labels.shift();
+            }
+
+            // 并发检测所有启用的目标
+            await Promise.all(targets.map(async (t, idx) => {
+                if (!t.enabled) return;
+                
+                const rawLatency = await pingTarget(t);
+                const latency = optimizeLatency(rawLatency, t.name);
+                const ok = latency !== null;
+                
+                updateTable(t.name, ok, latency);
+                
+                const ds = latencyChart.data.datasets[idx].data;
+                ds.push({ x: ts, y: latency });
+                if (ds.length > HISTORY_LENGTH) {
+                    ds.shift();
+                }
+            }));
+
+            latencyChart.update("none");
+        }
+
+        function startLoop() {
+            if (timerId) clearInterval(timerId);
+            timerId = setInterval(runCheck, UPDATE_INTERVAL);
+        }
+
+        // =============== 事件监听器 ===============
+        intervalSelect.addEventListener("change", () => {
+            UPDATE_INTERVAL = Number(intervalSelect.value);
+            HISTORY_LENGTH = Math.floor((TIME_RANGE_MINUTES * 60 * 1000) / UPDATE_INTERVAL);
+            startLoop();
+        });
+
+        timeRangeSelect.addEventListener("change", () => {
+            TIME_RANGE_MINUTES = Number(timeRangeSelect.value);
+            HISTORY_LENGTH = Math.floor((TIME_RANGE_MINUTES * 60 * 1000) / UPDATE_INTERVAL);
+            
+            // 更新时间轴单位
+            latencyChart.options.scales.x.time.unit = TIME_RANGE_MINUTES <= 5 ? "second" : "minute";
+            
+            // 更新显示文本
+            const rangeText = TIME_RANGE_MINUTES < 1 ? `${TIME_RANGE_MINUTES * 60} 秒` :
+                             TIME_RANGE_MINUTES === 1 ? "1 分钟" :
+                             TIME_RANGE_MINUTES < 60 ? `${TIME_RANGE_MINUTES} 分钟` :
+                             `${TIME_RANGE_MINUTES / 60} 小时`;
+            document.getElementById("currentTimeRange").textContent = rangeText;
+            
+            // 清理超出范围的历史数据
+            const cutoffTime = Date.now() - TIME_RANGE_MINUTES * 60 * 1000;
+            latencyChart.data.labels = latencyChart.data.labels.filter(label => label >= cutoffTime);
+            latencyChart.data.datasets.forEach(dataset => {
+                dataset.data = dataset.data.filter(point => point.x >= cutoffTime);
+            });
+            latencyChart.update("none");
+        });
+
+        // =============== 高级PNG导出功能 ===============
+        exportBtn.addEventListener("click", () => {
+            const originalText = exportBtn.textContent;
+            exportBtn.textContent = "📊 导出中...";
+            exportBtn.disabled = true;
+            
+            setTimeout(() => {
+                try {
+                    // 创建一个临时canvas用于生成带背景的图片
+                    const tempCanvas = document.createElement('canvas');
+                    const tempCtx = tempCanvas.getContext('2d');
+                    
+                    // 设置canvas尺寸 - 为表格布局优化
+                    tempCanvas.width = Math.max(latencyChart.canvas.width, 1400);
+                    const enabledCount = targets.filter(t => t.enabled).length;
+                    const tableHeight = Math.max(200, enabledCount * 35 + 100); // 根据目标数量动态计算表格高度
+                    tempCanvas.height = latencyChart.canvas.height + 400 + tableHeight; // 优化总高度
+                    
+                    // 绘制白色背景
+                    tempCtx.fillStyle = '#ffffff';
+                    tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+                    
+                    // 绘制标题
+                    tempCtx.fillStyle = '#1f2937';
+                    tempCtx.font = 'bold 28px Arial, sans-serif';
+                    tempCtx.textAlign = 'center';
+                    tempCtx.fillText('网络延迟监测报告', tempCanvas.width / 2, 40);
+                    
+                    // 绘制基本信息
+                    tempCtx.font = '14px Arial, sans-serif';
+                    tempCtx.fillStyle = '#6b7280';
+                    const now = new Date();
+                    const timeInfo = `导出时间: ${now.toLocaleString('zh-CN')} | 时间范围: ${document.getElementById("currentTimeRange").textContent} | 刷新间隔: ${intervalSelect.options[intervalSelect.selectedIndex].text}`;
+                    tempCtx.fillText(timeInfo, tempCanvas.width / 2, 70);
+                    
+                    const enabledTargets = targets.filter(t => t.enabled).map(t => t.name).join(', ');
+                    tempCtx.fillText(`监测目标: ${enabledTargets}`, tempCanvas.width / 2, 90);
+                    
+                    // 绘制图表
+                    const chartY = 120;
+                    tempCtx.drawImage(latencyChart.canvas, (tempCanvas.width - latencyChart.canvas.width) / 2, chartY);
+                    
+                    // 绘制详细统计信息 - 表格式布局
+                    const statsY = chartY + latencyChart.canvas.height + 50;
+                    tempCtx.fillStyle = '#1f2937';
+                    tempCtx.font = 'bold 22px Arial, sans-serif';
+                    tempCtx.textAlign = 'center';
+                    tempCtx.fillText('详细统计数据', tempCanvas.width / 2, statsY);
+                    
+                    // 绘制工具原理说明
+                    const principleY = statsY + 40;
+                    tempCtx.fillStyle = '#1f2937';
+                    tempCtx.font = 'bold 18px Arial, sans-serif';
+                    tempCtx.textAlign = 'left';
+                    tempCtx.fillText('🔬 工具原理说明', 40, principleY);
+                    
+                    tempCtx.font = '13px Arial, sans-serif';
+                    tempCtx.fillStyle = '#374151';
+                    const principleText = [
+                        '延迟测试原理: 使用HTTP请求响应时间测量，包含DNS解析、TCP连接、HTTP协议处理等完整网络访问时间',
+                        '与ping区别: ping测试ICMP协议的纯网络延迟，本工具测试实际网页访问延迟，更贴近真实使用体验',
+                        '数据统计: 最小/最大/平均延迟基于所有成功请求计算，在线/离线统计基于连续状态变化计算'
+                    ];
+                    
+                    principleText.forEach((line, index) => {
+                        tempCtx.fillText(line, 40, principleY + 25 + index * 18);
+                    });
+                    
+                    // 绘制统计数据表格
+                    const tableY = principleY + 120;
+                    const enabledTargetsList = targets.filter(t => t.enabled);
+                    
+                    if (enabledTargetsList.length > 0) {
+                        // 表格参数
+                        const tableWidth = tempCanvas.width - 80;
+                        const tableX = 40;
+                        const rowHeight = 35;
+                        const colWidths = [120, 80, 80, 80, 80, 80, 80, 80, 120]; // 各列宽度
+                        
+                        // 绘制表格标题
+                        tempCtx.fillStyle = '#1f2937';
+                        tempCtx.font = 'bold 16px Arial, sans-serif';
+                        tempCtx.textAlign = 'center';
+                        tempCtx.fillText('统计数据表格', tempCanvas.width / 2, tableY);
+                        
+                        // 绘制表头
+                        const headerY = tableY + 30;
+                        tempCtx.fillStyle = '#f3f4f6';
+                        tempCtx.fillRect(tableX, headerY, tableWidth, rowHeight);
+                        tempCtx.strokeStyle = '#d1d5db';
+                        tempCtx.lineWidth = 1;
+                        tempCtx.strokeRect(tableX, headerY, tableWidth, rowHeight);
+                        
+                        const headers = ['目标', '最小延迟', '最大延迟', '平均延迟', '检测次数', '成功次数', '成功率', '在线率', '离线次数'];
+                        let currentX = tableX;
+                        
+                        tempCtx.fillStyle = '#374151';
+                        tempCtx.font = 'bold 12px Arial, sans-serif';
+                        tempCtx.textAlign = 'center';
+                        
+                        headers.forEach((header, index) => {
+                            const colWidth = colWidths[index];
+                            tempCtx.fillText(header, currentX + colWidth / 2, headerY + 22);
+                            
+                            // 绘制列分隔线
+                            if (index < headers.length - 1) {
+                                tempCtx.beginPath();
+                                tempCtx.moveTo(currentX + colWidth, headerY);
+                                tempCtx.lineTo(currentX + colWidth, headerY + rowHeight);
+                                tempCtx.stroke();
+                            }
+                            
+                            currentX += colWidth;
+                        });
+                        
+                        // 绘制数据行
+                        enabledTargetsList.forEach((target, rowIndex) => {
+                            const stats = detailedStats[target.name];
+                            const now = Date.now();
+                            
+                            // 计算当前状态时长
+                            let currentOnlineTime = 0;
+                            let currentOfflineTime = 0;
+                            
+                            if (stats.isCurrentlyOnline && stats.lastOnlineStart) {
+                                currentOnlineTime = now - stats.lastOnlineStart;
+                            }
+                            if (stats.isCurrentlyOffline && stats.lastOfflineStart) {
+                                currentOfflineTime = now - stats.lastOfflineStart;
+                            }
+                            
+                            const totalOnlineTime = stats.totalOnlineTime + currentOnlineTime;
+                            const totalOfflineTime = stats.totalOfflineTime + currentOfflineTime;
+                            const totalSessionTime = now - stats.sessionStart;
+                            
+                            const rowY = headerY + (rowIndex + 1) * rowHeight;
+                            
+                            // 绘制行背景
+                            tempCtx.fillStyle = rowIndex % 2 === 0 ? '#ffffff' : '#f9fafb';
+                            tempCtx.fillRect(tableX, rowY, tableWidth, rowHeight);
+                            tempCtx.strokeStyle = '#e5e7eb';
+                            tempCtx.strokeRect(tableX, rowY, tableWidth, rowHeight);
+                            
+                            // 准备数据
+                            const rowData = [
+                                target.name,
+                                stats.minLatency !== null ? stats.minLatency + 'ms' : '—',
+                                stats.maxLatency !== null ? stats.maxLatency + 'ms' : '—',
+                                stats.avgLatency !== null ? Math.round(stats.avgLatency) + 'ms' : '—',
+                                stats.totalChecks.toString(),
+                                stats.successfulChecks.toString(),
+                                stats.totalChecks > 0 ? (stats.successfulChecks / stats.totalChecks * 100).toFixed(1) + '%' : '0%',
+                                totalSessionTime > 0 ? (totalOnlineTime / totalSessionTime * 100).toFixed(1) + '%' : '0%',
+                                stats.offlineCount.toString()
+                            ];
+                            
+                            // 绘制数据
+                            currentX = tableX;
+                            tempCtx.fillStyle = '#374151';
+                            tempCtx.font = '11px Arial, sans-serif';
+                            tempCtx.textAlign = 'center';
+                            
+                            rowData.forEach((data, colIndex) => {
+                                const colWidth = colWidths[colIndex];
+                                
+                                // 第一列（目标名称）特殊处理
+                                if (colIndex === 0) {
+                                    // 绘制颜色指示器
+                                    tempCtx.fillStyle = target.color;
+                                    tempCtx.fillRect(currentX + 10, rowY + 12, 12, 12);
+                                    
+                                    // 绘制目标名称
+                                    tempCtx.fillStyle = '#374151';
+                                    tempCtx.textAlign = 'left';
+                                    tempCtx.fillText(data, currentX + 30, rowY + 22);
+                                    tempCtx.textAlign = 'center';
+                                } else {
+                                    tempCtx.fillText(data, currentX + colWidth / 2, rowY + 22);
+                                }
+                                
+                                // 绘制列分隔线
+                                if (colIndex < rowData.length - 1) {
+                                    tempCtx.strokeStyle = '#e5e7eb';
+                                    tempCtx.beginPath();
+                                    tempCtx.moveTo(currentX + colWidth, rowY);
+                                    tempCtx.lineTo(currentX + colWidth, rowY + rowHeight);
+                                    tempCtx.stroke();
+                                }
+                                
+                                currentX += colWidth;
+                            });
+                        });
+                    }
+                    
+                    // 转换为PNG并下载
+                    const url = tempCanvas.toDataURL('image/png', 1.0);
+                    const link = document.createElement('a');
+                    const timestamp = now.toISOString().slice(0, 19).replace(/:/g, '-');
+                    link.download = `网络延迟监测详细报告-${timestamp}.png`;
+                    link.href = url;
+                    link.click();
+                    
+                    showNotification('详细报告导出成功！', 'success');
+                } catch (error) {
+                    console.error('导出失败:', error);
+                    showNotification('图表导出失败', 'error');
+                }
+                
+                exportBtn.textContent = originalText;
+                exportBtn.disabled = false;
+            }, 500);
+        });
+
+        // 自定义网址功能
+        addCustomBtn.addEventListener("click", showCustomUrlModal);
+        document.getElementById('closeCustomModal').addEventListener('click', hideCustomUrlModal);
+        document.getElementById('cancelCustomUrl').addEventListener('click', hideCustomUrlModal);
+        document.getElementById('confirmCustomUrl').addEventListener('click', handleAddCustomUrl);
+        
+        // 模态框背景点击关闭
+        document.getElementById('customUrlModal').addEventListener('click', function(e) {
+            if (e.target === this) {
+                hideCustomUrlModal();
+            }
+        });
+        
+        // 键盘事件
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                hideCustomUrlModal();
+            }
+        });
+
+        // 清除数据功能
+        clearBtn.addEventListener("click", () => {
+            if (confirm('确定要清除所有历史数据吗？此操作不可撤销。')) {
+                latencyChart.data.labels = [];
+                latencyChart.data.datasets.forEach(dataset => {
+                    dataset.data = [];
+                });
+                latencyChart.update("none");
+                
+                // 重置详细统计
+                Object.keys(detailedStats).forEach(targetName => {
+                    detailedStats[targetName] = {
+                        latencies: [],
+                        minLatency: null,
+                        maxLatency: null,
+                        avgLatency: null,
+                        offlineCount: 0,
+                        totalOfflineTime: 0,
+                        lastOfflineStart: null,
+                        isCurrentlyOffline: false,
+                        offlineEvents: [],
+                        totalOnlineTime: 0,
+                        lastOnlineStart: null,
+                        isCurrentlyOnline: false,
+                        onlineEvents: [],
+                        sessionStart: Date.now(),
+                        totalChecks: 0,
+                        successfulChecks: 0
+                    };
+                });
+                
+                // 重置表格状态
+                targets.forEach(t => {
+                    const statusElement = document.getElementById(`${t.name}-status`);
+                    const latencyElement = document.getElementById(`${t.name}-latency`);
+                    const timeElement = document.getElementById(`${t.name}-time`);
+                    const latencyStatsElement = document.getElementById(`${t.name}-latency-stats`);
+                    const onlineStatsElement = document.getElementById(`${t.name}-online-stats`);
+                    const offlineStatsElement = document.getElementById(`${t.name}-offline-stats`);
+                    
+                    statusElement.innerHTML = `<span class="status-indicator status-checking"></span>待检测`;
+                    statusElement.className = "inline-flex items-center text-sm text-gray-600";
+                    latencyElement.textContent = "—";
+                    latencyElement.className = "px-4 py-4 whitespace-nowrap text-center text-sm font-mono text-gray-500";
+                    timeElement.textContent = "—";
+                    
+                    if (latencyStatsElement) {
+                        latencyStatsElement.innerHTML = `最小: —<br>最大: —<br>平均: —`;
+                    }
+                    if (onlineStatsElement) {
+                        onlineStatsElement.innerHTML = `在线时长: —<br>在线率: —`;
+                    }
+                    if (offlineStatsElement) {
+                        offlineStatsElement.innerHTML = `离线次数: 0<br>离线时长: 0s`;
+                    }
+                });
+                
+                // 重置详细统计卡片
+                initializeDetailedStats();
+                
+                showNotification('所有数据已清除', 'info');
+            }
+        });
+
+        // 通知功能
+        function showNotification(message, type = 'info') {
+            const notification = document.createElement('div');
+            notification.className = `fixed top-4 right-4 z-50 px-4 py-3 rounded-md shadow-lg transform translate-x-full transition-transform duration-300`;
+            
+            const colors = {
+                'success': 'bg-green-500 text-white',
+                'error': 'bg-red-500 text-white',
+                'info': 'bg-blue-500 text-white',
+                'warning': 'bg-yellow-500 text-black'
+            };
+            
+            notification.className += ' ' + colors[type];
+            notification.textContent = message;
+            
+            document.body.appendChild(notification);
+            
+            setTimeout(() => notification.classList.remove('translate-x-full'), 10);
+            
+            setTimeout(() => {
+                notification.classList.add('translate-x-full');
+                setTimeout(() => document.body.removeChild(notification), 300);
+            }, 3000);
+        }
+
+        // =============== 延迟优化 ===============
+        function optimizeLatency(rawLatency, targetName) {
+            if (rawLatency === null) return null;
+            
+            let optimized = Math.max(1, Math.min(rawLatency, 10000));
+            
+            if (rawLatency !== optimized) {
+                console.log(`${targetName} 延迟优化: ${rawLatency}ms -> ${optimized}ms`);
+            }
+            
+            return optimized;
+        }
+
+        // =============== 初始化 ===============
+        document.addEventListener('DOMContentLoaded', function() {
+            initializeTargetSelector();
+            initializeTable();
+            initializeDetailedStats();
+            initializeChart();
+            
+            // 立即开始检测（默认1秒间隔）
+            runCheck();
+            startLoop();
+            
+            console.log('实时HTTP延迟监测工具已启动');
+            showNotification('监测工具已启动，正在检测网站延迟...', 'info');
+        });
+    </script>
+</body>
+</html>
